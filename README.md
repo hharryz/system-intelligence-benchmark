@@ -12,24 +12,21 @@ System Intelligence Benchmark is a comprehensive benchmark suite for evaluating 
 
 
 ## Benchmark Overview
-A benchmark is a standard or point of reference against which things may be compared or assessed. In the context of AI and LLMs, benchmarks are essential for evaluating model capabilities, guiding research directions, and measuring progress. 
-
-### Benchmark Framework
-
-To advance benchmark development, we propose the System Intelligence Benchmark, a modular and extensible framework designed to support diverse research domains and problem types. As shown in the below figure, the framework comprises four abstractions: task set, environment, executor, and evaluator. Each task is associated with a specific environment, wherein the executor generates a solution that is subsequently assessed by the evaluator, which returns the evaluation metrics. This design enables the flexible integration of heterogeneous agents and their systematic evaluation. Additionally, the framework includes built-in executors (agents), evaluators (methodologies and grading rubrics), and tutorials. In an ideal case, users need only supply tasks that represent specific capabilities, select an evaluator, and quickly create and run a new benchmark. You can see [benchmark_abstraction.md](doc/benchmark_abstract.md) for details.
-
+A benchmark is a standard or point of reference against which things may be compared or assessed. In the context of AI and LLMs, benchmarks are essential for evaluating model capabilities, guiding research directions, and measuring progress. As shown in the below figure, a benchmark can comprise four abstractions: task set, environment, executor, and evaluator. Each task is associated with a specific environment, wherein the executor generates a solution that is subsequently assessed by the evaluator, which returns the evaluation metrics. You can see [benchmark_abstraction.md](doc/benchmark_abstract.md) for details.
 <img src="doc/benchmark.png" alt="Dashboard Screenshot" width="600"/>
 
-The benchmark framework is **still under development**. If you have any questions, feel free to open an issue or contact us directly.  
+To advance benchmark development, a modular and extensible benchmark framework is needed. It enables the flexible integration of heterogeneous agents and support systematic evaluations across diverse research domains and problem types. The framework often includes built-in executors (agents), evaluators (methodologies and grading rubrics), and tutorials. In an ideal case, users need only supply tasks that represent specific capabilities, select an evaluator, and quickly create and run a new benchmark. We highly recommned you start from the open-sources ones, such [HAL](https://github.com/princeton-pli/hal-harness) or [Inspect](https://inspect.aisi.org.uk/).
+
 
 ### Benchmarks
 
-System Intelligence Benchmark currently includes the following example benchmarks. Each benchmark assesses specific capabilities across multiple levels within a given research direction. Some benchmarks are still under development — we're actively updating them. Stay tuned!
+System Intelligence Benchmark currently includes the following example benchmarks. Each benchmark assesses specific capabilities across multiple levels within a given research direction. Some benchmarks **are still under development** — we're actively updating them. Stay tuned!
 
 - **System Exam Benchmark** ([benchmarks/courseexam_bench/](benchmarks/courseexam_bench/)) - Tests LLM understanding of system concepts through university course exams
 - **System Lab Benchmark** ([benchmarks/courselab_bench/](benchmarks/courselab_bench/)) - Assesses AI capability on practical system course labs and projects 
 - **System Artifact Benchmark** ([benchmarks/arteval_bench/](benchmarks/arteval_bench/)) - Evaluates AI performance on artifact evaluation
 - **System Modeling Benchmark** ([benchmarks/sysmobench/](benchmarks/sysmobench/)) - Evaluates an agent's ability to produce correct TLA+ models for real-world concurrent and distributed systems, covering system capabilities across system comprehension, abstraction, and potentially tool fluency.
+- **System Management - SRE** ([benchmarks/sregym](benchmarks/sregym)) - A Benchmarking Platform for Site Reliability Engineering (SRE) Agents.
 - **TopoSense Benchmark** ([benchmarks/toposense_bench/](benchmarks/toposense_bench/)) - Evaluates Semantic-Spatial Sensor Scheduling (S³) capabilities in large-scale IoT digital twins (5,250 queries across 2,510 cameras)
 - **Example Benchmark** ([benchmarks/example_bench/](benchmarks/example_bench/)) - Template and reference implementation for creating new benchmarks
 
@@ -39,7 +36,7 @@ System Intelligence Benchmark currently includes the following example benchmark
 - **Benchmarks** (`benchmarks/`) - Contains individual benchmark implementations, each with its own source code, tests, and configuration
 - **CLI Tools** (`cli/`) - Command-line interface for running benchmarks and managing evaluations
 - **SDK** (`sdk/`) - Software development kit providing evaluators, LLM interfaces, and utility functions
-- **Documentation** (`doc/`) - Guides and documentation for using and contributing to SysCapBench
+- **Documentation** (`doc/`) - Guides and documentation for using and contributing to System Intelligence Benchmark
 
 ### Prerequisites
 
@@ -60,21 +57,12 @@ System Intelligence Benchmark currently includes the following example benchmark
 2. Install dependencies for a specific benchmark:
 
    ```bash
-   cd cli
+   cd benchmarks/<benchmark_name>
    ./install.sh
    ```
 3. Each benchmark includes an `env.toml` file for configuration. You should add your own llm endpoint url and key there.
 
 ### Running Benchmarks
-
-#### Run All Benchmarks
-
-To run all benchmarks sequentially:
-
-```bash
-cd cli
-./run_all_local.sh <model_name>
-```
 
 #### Run a Single Benchmark
 
@@ -98,15 +86,16 @@ You can find more detailed usage guides in the CLI [README.md](cli/README.md).
 
 ## Contribute to Benchmarks
 
-We welcome community contributions to enrich existing benchmarks (e.g., by adding more exam problems to the System Exam benchmark and more system artifacts to System Artifact and System Modeling benchmark), port your existing benchmarks, and more importantly to create new system intelligence benchmarks with our framework. See below for detailed instructions. We believe that such collective community efforts will advance AI to its next level and help realize System Intelligence, unlocking the potential of AI-driven computing system innovations. If you are interested in contributing or already have good system benchmarks, please let us know. We have set up a [slack channel](https://join.slack.com/t/sys-intelligence/shared_invite/zt-3hpkgr2aa-NnuPxUbyHr45S89DFi_N1A) at sys-intelligence.slack.com.
+We welcome community contributions to enrich existing benchmarks (e.g., by adding more exam/labs problems to the System Exam/Lab benchmark and more system artifacts to System Artifact and System Modeling benchmark), port your existing benchmarks, and more importantly to create new system intelligence benchmarks with our framework. See below for detailed instructions. We believe that such collective community efforts will advance AI to its next level and help realize System Intelligence, unlocking the potential of AI-driven computing system innovations. If you are interested in contributing or already have good system benchmarks, please let us know. We have set up a [slack channel](https://join.slack.com/t/sys-intelligence/shared_invite/zt-3hpkgr2aa-NnuPxUbyHr45S89DFi_N1A) at sys-intelligence.slack.com.
 
 > [!NOTE] 
-> We suggest getting starting by walking through the basic concept of a AI benchmark: [Benchmark Abstraction](doc/benchmark_abstract.md). After understanding the basic concept, you can decide whether to Contribute to Existing Benchmarks, Porting Existing Benchmarks, or  Creating New Benchmarks.
+> We suggest getting starting by walking through the basic concept of a AI benchmark: [Benchmark Abstraction](doc/benchmark_abstract.md). After understanding the basic concept, you can decide whether to Contribute to Existing Benchmarks, Porting Existing Benchmarks, or Creating New Benchmarks.
 
 ### Contribute to Existing Benchmarks
-The easiest way to contribute is to add more tasks to existing benchmarks. Currently, the following two are highly recommended. You can simply follow the provided guidelines to submit your data—once that’s done, you’re all set.
-- **SystemExam**: If you are a professor teaching one or more courses, we highly recommend contributing **more exam problems** to SystemExam (see [this doc](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/course_exam_bench#how-to-extend-the-benchmark) for step-by-step guidance).
-- **SystemArtifact**: If you are a researcher submitting artifacts, or an AE chair involved in artifact evaluation, we highly recommend contributing **more system artifacts** to SystemArtifact (see [this doc](https://github.com/sys-intelligence/system-intelligence-benchmark/blob/main/benchmarks/arteval_bench/README.md) for step-by-step guidance).
+The easiest way to contribute is to add more tasks to existing benchmarks. Currently, the following are highly recommended. You can simply follow the provided guidelines to submit your data—once that’s done, you’re all set.
+- **SystemExam**: If you are a professor teaching one or more courses, we highly recommend contributing **your exam problems** to SystemExam (see [this doc](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/courseexam_bench#adding-new-exams) for step-by-step guidance).
+- **SystemLab**：If you are a professor teaching coding-related courses, we highly recommend contributing **more coding tasks** to SystemLab (see [this doc](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/courseexam_bench#adding-new-exams) for step-by-step guidance)
+- **SystemArtifact**: If you are a researcher submitting artifacts, or an AE chair involved in artifact evaluation, we highly recommend contributing **more system artifacts** to SystemArtifact (see [this doc](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/arteval_bench#contributors-guide) for step-by-step guidance).
 
 In addition, you can also help review the existing benchmarks to propose improvement ideas or directly enhance them—for example, by adding more advanced evaluators or incorporating improved metrics.
 
@@ -120,7 +109,7 @@ For integrating existing, independently-developed benchmark projects while maint
 - Write a bridge layer to connect upstream evaluators with framework SDK
 - Configure bidirectional sync for pulling updates and contributing fixes
 
-**Example:** [SysMoBench](benchmarks/sysmobench/) - ported from [SysSpecBench](https://github.com/specula-org/SysSpecBench)
+**Example:** [SysMoBench](benchmarks/sysmobench/) - ported from [SysMoBench]([https://github.com/specula-org/SysSpecBench](https://github.com/specula-org/SysMoBench))
 
 ### Creating New Benchmarks
 > [!NOTE]
