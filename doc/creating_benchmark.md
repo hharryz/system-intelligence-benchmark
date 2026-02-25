@@ -1,6 +1,6 @@
 # How to Create a Custom Benchmark
 
-This guide will walk you through how to create a custom system-intelligence benchmark using the framework. By following these steps, you’ll be able to evaluate the latest models and agents on your own system-related tasks and seamlessly integrate your benchmark into the framework.
+This doc will walk you through how to create a custom sys-intelligence benchmark with a simple education code. By following these steps, you’ll be able to evaluate the latest models and agents on your own system-related tasks and seamlessly integrate your benchmark into the System Intelligence Benchmark.
 
 ## Prerequisites
 
@@ -14,9 +14,11 @@ Before creating a custom benchmark, ensure you have:
 
 Choose an example benchmark that **is similar to** your setting as a starting point. 
 
-If your tasks involve exam-style questions, consider starting from [course_exam_bench](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/course_exam_bench). If your benchmark focuses on algorithm design or optimization tasks, you might use [cache_algo_bench](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/cache_algo_bench) as a template. These tasks can often be handled by a minimal agent (an LLM call plus a response parser).
+If your tasks only involve text-based questions, consider starting from [courseexam_bench](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/courseexam_bench). If your benchmark focuses on algorithm design or optimization tasks, you might use [cache_algo_bench](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/cache_algo_bench) as a template. These tasks can often be handled by a minimal agent (an LLM call plus a response parser).
 
-Use [course_lab_bench](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/course_exam_bench), if your benchmark is related to **environment setup, system understanding/implementation, performance analysis, or debugging tasks**, and each task may need different runing environments. These tasks typically require an LLM to autonomously call tools (such as the File Editor, Bash, etc.), navigate a large codebase, and run experiments or tests—similar to what a human developer would do. To support this, we provide several advanced agents (e.g., Claude Code, MiniSWEAgent) in this example, along with guidance for [integrating new agents](https://github.com/sys-intelligence/system-intelligence-benchmark/blob/main/benchmarks/course_lab_bench/add_agents.md).
+Use [courselab_bench](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/courselab_bench), if your benchmark is related to **environment setup, system understanding/implementation, performance analysis, or debugging tasks**, and each task may need different runing environments. These tasks typically require an LLM to autonomously call tools (such as the File Editor, Bash, etc.), navigate a large codebase, and run experiments or tests—similar to what a human developer would do. To support this, we provide a simple ReACt Agent in this example, along with guidance for [integrating new agents](https://github.com/sys-intelligence/system-intelligence-benchmark/tree/main/benchmarks/courselab_bench#using-custom-agents).
+
+For more complex benchmark, we highly recommned you take a look at the open-sources benchmark frameworks, such as [HAL](https://github.com/princeton-pli/hal-harness) or [Inspect](https://inspect.aisi.org.uk/). They provide many diverse benchmarks as examples.
 
 1. Navigate to the benchmarks directory:
 
@@ -396,7 +398,7 @@ Run tests:
 
 ## Step 7: Integrate with CLI
 
-To make your benchmark available through the SysCapBench CLI:
+To make your benchmark available through the CLI:
 
 1. Update `cli/run_docker.sh` or /run_all_local.sh if needed
 
@@ -438,8 +440,8 @@ Refer to existing benchmarks for inspiration:
 
 - **`example_bench/`**: Minimal template with `SimpleExecutor` + `BasicEvaluator`
 - **`cache_algo_bench/`**: Code execution, algorithm simulation and performance evaluation
-- **`course_exam_bench/`**: Multiple-choice and short-answer questions with `ExamEvaluator`
-- **`course_lab_bench/`**: Complex project-based evaluation with agent executors
+- **`courseexam_bench/`**: Multiple-choice and short-answer questions with `ExamEvaluator`
+- **`courselab_bench/`**: Complex project-based evaluation with agent executors
 
 ### Getting Help
 
