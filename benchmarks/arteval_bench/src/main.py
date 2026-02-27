@@ -33,12 +33,22 @@ def main(file_path, model, agent, save_path):
                 logger.info(f'Skipping invalid JSON line: {line}')
                 continue
 
-            deployment = item.get('docker_env', None) or item.get('docer_env', None)
+            env_val = item.get('env', None)
+            if env_val is not None:
+                s = str(env_val).strip().lower()
+                if s == 'local':
+                    run_on_host = True
+                    deployment = None
+                else:
+                    run_on_host = False
+                    deployment = str(env_val).strip() or None
+            else:
+                deployment = item.get('docker_env', None) or item.get('docer_env', None)
+                run_on_host = item.get('run_on_host', False)
             project_path = f"./data/benchmark/{item.get('artifact_dir', None)}"
             task_file = item.get('artifact_readme', None)
             task_id = item.get('artifact_id', None)
             test_method = item.get('evaluator', None)
-            run_on_host = item.get('run_on_host', False)
 
             task = get_task(task_file)
 
