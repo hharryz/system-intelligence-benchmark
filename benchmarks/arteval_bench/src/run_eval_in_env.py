@@ -626,8 +626,14 @@ async def run_eval_in_env(
         else:
             logger.warning(f'No _agent_eval directories found in {project_path}')
 
+    # Run evaluator: JSONL evaluator is a path to main.py (e.g. sosp23_acto/_agent_eval/main.py);
+    # must run from /repo with `python <path>` so the script is executed correctly.
+    if test_method.strip().endswith('.py'):
+        eval_cmd = f"cd /repo && python {test_method.strip()}"
+    else:
+        eval_cmd = f"cd /repo && {test_method}"
     try:
-        test_output = await runtime.run_in_session(BashAction(command=test_method))
+        test_output = await runtime.run_in_session(BashAction(command=eval_cmd))
         logger.info(test_output)
         result = {
             'task': task,

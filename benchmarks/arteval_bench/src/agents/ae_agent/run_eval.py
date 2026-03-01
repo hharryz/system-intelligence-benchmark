@@ -270,7 +270,11 @@ async def _run_agent_then_eval_async(
     # 2. Run evaluation script if provided
     if test_method and test_method.strip():
         try:
-            eval_cmd = f'cd {project_path} && {test_method}'
+            # Evaluator from JSONL is a path to main.py; run with python from project root.
+            if test_method.strip().endswith('.py'):
+                eval_cmd = f'cd {project_path} && python {test_method.strip()}'
+            else:
+                eval_cmd = f'cd {project_path} && {test_method}'
             eval_result = subprocess.run(
                 eval_cmd,
                 shell=True,
