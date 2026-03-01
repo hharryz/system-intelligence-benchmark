@@ -30,16 +30,16 @@ The benchmark will:
 4. **Evaluation script flow** (same as claude_sdk): after the agent finishes, run the JSONL `evaluator` (test_method), e.g. `cd /repo && python _agent_eval/main.py`, parse output for `score` and write to result.
 5. If set, pass through `ANTHROPIC_API_KEY`, `ANTHROPIC_FOUNDRY_API_KEY`, `ANTHROPIC_FOUNDRY_BASE_URL`, `CLAUDE_CODE_USE_FOUNDRY`.
 
-**Evaluation flow on host**: When `run_on_host=True` and the agent is ae_agent, `run_eval_in_env.run_eval_on_host` calls this package’s `run_agent_then_eval()`: run the agent first, then run `test_method` on the host (e.g. `cd project_path && python _agent_eval/main.py`), parse score with `utils.parse_eval_score()`, and return a result with the same shape as the Docker path (`score`, `test_method`, `status`).
+**Evaluation flow on host**: When `run_on_host=True` and the agent is ae_agent, `run_eval_in_env.run_eval_on_host` calls this package's `run_agent_then_eval()`: run the agent first, then run `test_method` on the host (e.g. `cd project_path && python _agent_eval/main.py`), parse score with `utils.parse_eval_score()`, and return a result with the same shape as the Docker path (`score`, `test_method`, `status`).
 
 ## Dependencies
 
 - Python 3; `claude-agent-sdk` is installed in the container via `install.sh`.
-- When running in Docker via the benchmark’s `run_eval_in_env.py`, install `swerex` on the host (the benchmark includes it). When using this directory’s `main.py` for Docker mode standalone, you also need `swe-rex`.
+- When running in Docker via the benchmark's `run_eval_in_env.py`, install `swerex` on the host (the benchmark includes it). When using this directory's `main.py` for Docker mode standalone, you also need `swe-rex`.
 
 ## Running on host (local)
 
-You can run tasks on the **host** from this directory (without the benchmark’s Docker flow):
+You can run tasks on the **host** from this directory (without the benchmark's Docker flow):
 
 1. **Single or batch via main.py**  
    Use a JSONL where each line can set `"env": "local"` or `"run_on_host": true` to run that task on the host; others run in Docker (requires swerex).
@@ -59,4 +59,4 @@ You can run tasks on the **host** from this directory (without the benchmark’s
 
 ## Relation to the standalone ae-agent repo
 
-The standalone ae-agent repo provides the same host/Docker CLI. This sub-agent includes both the **in-container** runner (used by the benchmark’s `run_eval_in_env.py`) and **host/local** mode via `main.py` and `run_eval.py`.
+The standalone ae-agent repo provides the same host/Docker CLI. This sub-agent includes both the **in-container** runner (used by the benchmark's `run_eval_in_env.py`) and **host/local** mode via `main.py` and `run_eval.py`.

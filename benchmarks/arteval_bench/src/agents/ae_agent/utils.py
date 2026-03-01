@@ -19,12 +19,15 @@ __all__ = [
     'apply_timeout_env',
     'clone_artifact_repo',
     'compute_and_write_summary',
+    'parse_artifact_url',
     'docker_image_from_item',
     'env_from_item',
     'get_task',
     'gpu_from_item',
     'has_api_key',
     'interactive_from_item',
+    'enable_skill_from_item',
+    'enable_subagent_from_item',
     'is_local_env',
     'parse_eval_score',
     'read_task_from_file',
@@ -112,6 +115,16 @@ _DEFAULT_TASK_TEMPLATE = (
 def interactive_from_item(item: dict) -> bool:
     """Whether to enable interactive mode (user can continue giving agent instructions after task completes)."""
     return _parse_bool_value(item.get('interactive', False))
+
+
+def enable_skill_from_item(item: dict, default: bool = False) -> bool:
+    """Whether to enable Claude Agent SDK Skill (load from ~/.claude/skills/ and .claude/skills/)."""
+    return _parse_bool_value(item.get('enable_skill', default))
+
+
+def enable_subagent_from_item(item: dict, default: bool = False) -> bool:
+    """Whether to enable Claude Agent SDK Sub-agent (Task tool)."""
+    return _parse_bool_value(item.get('enable_subagent', default))
 
 
 def safe_task_id(task_id: str | None, fallback: str = 'unknown') -> str:
@@ -217,12 +230,35 @@ def read_task_from_file(artifact_path: str, task_file: str) -> str:
         return get_task(task_file)
 
 
-def clone_artifact_repo(artifact_url: str, target_dir: str) -> str:
+def parse_artifact_url(artifact_url: str) -> tuple[str, str | None]:
+    """Parse artifact URL into (clone_url, branch) for git clone.
+
+    Supports GitHub-style URLs:
+    - https://github.com/org/repo -> (https://github.com/org/repo.git, None)
+    - https://github.com/org/repo/tree/branch -> (https://github.com/org/repo.git, branch)
+    """
+    url = (artifact_url or '').strip()
+    if not url:
+        return url, None
+    # .../tree/<branch> or .../tree/<branch>/
+    tree_match = re.search(r'^(.*?)/tree/([^/#]+?)/?$', url)
+    if tree_match:
+        base, branch = tree_match.group(1), tree_match.group(2).strip()
+        if not base.endswith('.git'):
+            base = base.rstrip('/') + '.git'
+        return base, branch if branch else None
+    if not url.endswith('.git'):
+        url = url.rstrip('/') + '.git'
+    return url, None
+
+
+def clone_artifact_repo(artifact_url: str, target_dir: str, branch: str | None = None) -> str:
     """Clone artifact repository from URL into target_dir.
 
     Args:
-        artifact_url: Git clone URL (e.g. https://github.com/org/repo.git)
+        artifact_url: Git clone URL (e.g. https://github.com/org/repo or .../repo/tree/branch).
         target_dir: Absolute path to the directory to clone into (must not exist or be empty).
+        branch: Optional branch to clone. If None, parse_artifact_url(artifact_url) is used.
 
     Returns:
         target_dir (artifact root path after clone).
@@ -234,8 +270,14 @@ def clone_artifact_repo(artifact_url: str, target_dir: str) -> str:
         return target_dir
     if os.path.exists(target_dir):
         os.rmdir(target_dir)
+    clone_url, parsed_branch = parse_artifact_url(artifact_url)
+    use_branch = branch if branch is not None else parsed_branch
+    cmd = ['git', 'clone', '--depth', '1']
+    if use_branch:
+        cmd.extend(['-b', use_branch])
+    cmd.extend([clone_url, target_dir])
     r = subprocess.run(
-        ['git', 'clone', '--depth', '1', artifact_url, target_dir],
+        cmd,
         capture_output=True,
         text=True,
         timeout=600,

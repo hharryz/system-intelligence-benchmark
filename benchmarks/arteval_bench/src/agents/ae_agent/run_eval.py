@@ -172,6 +172,8 @@ async def _run_local(
     *,
     skip_prereq_check: bool = False,
     interactive: bool = False,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
 ):
     """Run one task on host by delegating to runner.run_agent()."""
     print('=' * 80)
@@ -199,6 +201,8 @@ async def _run_local(
         artifact_path=project_path,
         timeout_ms=timeout_ms,
         interactive=interactive,
+        enable_skill=enable_skill,
+        enable_subagent=enable_subagent,
     )
 
     return _make_eval_result(
@@ -230,6 +234,9 @@ async def _run_agent_then_eval_async(
     timeout_ms: int | None = None,
     *,
     skip_prereq_check: bool = False,
+    interactive: bool = False,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
 ) -> dict:
     """Run agent on host, then run evaluation script (test_method); return result with score.
 
@@ -253,7 +260,9 @@ async def _run_agent_then_eval_async(
         env='local',
         artifact_path=project_path,
         timeout_ms=timeout_ms,
-        interactive=False,
+        interactive=interactive,
+        enable_skill=enable_skill,
+        enable_subagent=enable_subagent,
     )
     agent_output = agent_result['output']
     agent_status = status_from_exit_code(agent_result['exit_code'])
@@ -307,6 +316,9 @@ def run_agent_then_eval(
     timeout_ms: int | None = None,
     *,
     skip_prereq_check: bool = False,
+    interactive: bool = False,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
 ) -> dict:
     """Synchronous entry: run agent on host then evaluation script; return result with score.
 
@@ -322,6 +334,9 @@ def run_agent_then_eval(
             save_path,
             timeout_ms=timeout_ms,
             skip_prereq_check=skip_prereq_check,
+            interactive=interactive,
+            enable_skill=enable_skill,
+            enable_subagent=enable_subagent,
         )
     )
 
@@ -475,6 +490,15 @@ def _save_container(
     return image_tag, stopped
 
 
+def save_container_after_run(container_id: str, project_path: str, task_id: str) -> tuple[str | None, bool]:
+    """Sync workspace from container to host, commit as image, stop container.
+
+    Public entry for run_eval_in_env when keep_container=False (original artifact-agent behavior).
+    Returns (saved_image_tag, container_stopped).
+    """
+    return _save_container(container_id, project_path, task_id)
+
+
 async def _get_container_id(runtime) -> str | None:
     """Get container hostname/ID from inside the container."""
     try:
@@ -496,8 +520,13 @@ def _shell_escape(s: str) -> str:
     return s.replace("'", "'\"'\"'")
 
 
-def _build_api_env_dict(timeout_ms: int) -> dict[str, str]:
-    """Build env vars dict for API keys, Foundry, and timeouts.
+def _build_api_env_dict(
+    timeout_ms: int,
+    *,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
+) -> dict[str, str]:
+    """Build env vars dict for API keys, Foundry, timeouts, and SDK options.
 
     Single source of truth for _docker_exec_env_args and _setup_container_env.
     """
@@ -515,12 +544,25 @@ def _build_api_env_dict(timeout_ms: int) -> dict[str, str]:
         env['ANTHROPIC_FOUNDRY_BASE_URL'] = foundry_url
     if os.environ.get('CLAUDE_CODE_USE_FOUNDRY') == '1':
         env['CLAUDE_CODE_USE_FOUNDRY'] = '1'
+    if enable_skill:
+        env['AE_ENABLE_SKILL'] = '1'
+    if enable_subagent:
+        env['AE_ENABLE_SUBAGENT'] = '1'
     return env
 
 
-def _docker_exec_env_args(timeout_ms: int) -> list[str]:
+def _docker_exec_env_args(
+    timeout_ms: int,
+    *,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
+) -> list[str]:
     """Build -e VAR=value args for docker exec (env vars needed by runner.py)."""
-    env = _build_api_env_dict(timeout_ms)
+    env = _build_api_env_dict(
+        timeout_ms,
+        enable_skill=enable_skill,
+        enable_subagent=enable_subagent,
+    )
     args = []
     for k, v in env.items():
         args.extend(['-e', f'{k}={v}'])
@@ -547,9 +589,15 @@ async def _upload_task(runtime, task: str, task_file_path: str | None):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-async def _setup_container_env(runtime, timeout_ms: int):
+async def _setup_container_env(
+    runtime, timeout_ms: int, *, enable_skill: bool = False, enable_subagent: bool = False
+):
     """Set timeout and API keys inside the container."""
-    env = _build_api_env_dict(timeout_ms)
+    env = _build_api_env_dict(
+        timeout_ms,
+        enable_skill=enable_skill,
+        enable_subagent=enable_subagent,
+    )
     parts = [f"export {k}='{_shell_escape(v)}'" for k, v in env.items()]
     await _run_bash(runtime, ' && '.join(parts))
 
@@ -690,6 +738,9 @@ async def _run_interactive_in_container(
     project_path: str,
     model: str,
     timeout_ms: int,
+    *,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
 ) -> dict:
     """Run task + interactive in foreground via docker exec -it.
 
@@ -707,7 +758,11 @@ async def _run_interactive_in_container(
         'docker',
         'exec',
         '-it',
-        *_docker_exec_env_args(timeout_ms),
+        *_docker_exec_env_args(
+            timeout_ms,
+            enable_skill=enable_skill,
+            enable_subagent=enable_subagent,
+        ),
         container_id,
         'python3',
         '-u',
@@ -751,6 +806,8 @@ async def _run_in_docker(  # noqa: C901
     *,
     task_file_path: str | None = None,
     interactive: bool = False,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
 ) -> dict:
     """Run task inside a Docker container.
 
@@ -785,7 +842,9 @@ async def _run_in_docker(  # noqa: C901
     )
 
     await _upload_task(runtime, task, task_file_path)
-    await _setup_container_env(runtime, timeout_ms)
+    await _setup_container_env(
+        runtime, timeout_ms, enable_skill=enable_skill, enable_subagent=enable_subagent
+    )
 
     container_id = await _get_container_id(runtime)
     result = None
@@ -793,7 +852,10 @@ async def _run_in_docker(  # noqa: C901
     try:
         # Prefer foreground interactive when container_id is available and stdin is a TTY.
         if interactive and container_id and _stdin_is_tty():
-            result = await _run_interactive_in_container(container_id, task_id, task, project_path, model, timeout_ms)
+            result = await _run_interactive_in_container(
+                container_id, task_id, task, project_path, model, timeout_ms,
+                enable_skill=enable_skill, enable_subagent=enable_subagent,
+            )
         else:
             if interactive and not _stdin_is_tty():
                 print(
@@ -884,6 +946,8 @@ def run_eval(
     use_gpu: bool = False,
     task_file_path: str | None = None,
     interactive: bool = False,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
 ) -> dict:
     """Run task in the given environment (local host or Docker).
 
@@ -902,6 +966,8 @@ def run_eval(
                 timeout_ms,
                 skip_prereq_check=skip_prereq_check,
                 interactive=interactive,
+                enable_skill=enable_skill,
+                enable_subagent=enable_subagent,
             )
         )
 
@@ -939,5 +1005,7 @@ def run_eval(
             timeout_ms,
             task_file_path=task_file_path,
             interactive=interactive,
+            enable_skill=enable_skill,
+            enable_subagent=enable_subagent,
         )
     )

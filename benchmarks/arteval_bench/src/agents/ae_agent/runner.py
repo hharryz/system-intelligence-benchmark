@@ -107,7 +107,13 @@ def _parse_retry_after(exc: BaseException) -> int | None:
     return int(m.group(1)) if m else None
 
 
-# Shared prompt fragments (avoids duplication and keeps host/docker logic aligned).
+def _parse_env_bool(env_var: str, default: bool = False) -> bool:
+    """Parse env var as bool. '1', 'true', 'yes' -> True."""
+    v = os.environ.get(env_var, '').strip().lower()
+    return v in ('1', 'true', 'yes') if v else default
+
+
+# Shared prompt fragments
 _PROMPT_TIMEOUT_HOST = (
     'TIMEOUT CONFIGURATION (CRITICAL):\n'
     '- Long-running commands (builds, tests, Kind cluster creation) are expected\n'
@@ -202,6 +208,8 @@ async def run_agent(  # noqa: C901
     artifact_path: str | None = None,
     timeout_ms: int | None = None,
     interactive: bool = False,
+    enable_skill: bool = False,
+    enable_subagent: bool = False,
 ) -> dict:
     """Run the agent using Claude SDK. Single implementation for all modes.
 
@@ -213,6 +221,8 @@ async def run_agent(  # noqa: C901
         artifact_path: Artifact directory path (for prompt and initial message).
         timeout_ms: Bash timeout in ms.
         interactive: If True, enter interactive multi-turn loop after initial task.
+        enable_skill: If True, enable Claude Agent SDK Skill (load from ~/.claude/skills/).
+        enable_subagent: If True, enable Claude Agent SDK Sub-agent (Task tool).
 
     Returns:
         dict with keys: exit_code (int), output (str), message_count (int)
@@ -224,11 +234,18 @@ async def run_agent(  # noqa: C901
     if system_prompt is None:
         system_prompt = build_system_prompt(task, env=env, artifact_path=artifact_path, timeout_ms=timeout_ms)
 
+    allowed_tools = ['Read', 'Write', 'Bash']
+    if enable_skill:
+        allowed_tools.append('Skill')
+    if enable_subagent:
+        allowed_tools.append('Task')
+    setting_sources = ['user', 'project'] if enable_skill else ['user']
+
     options = ClaudeAgentOptions(
         model=model_name,
         system_prompt=system_prompt,
-        allowed_tools=['Read', 'Write', 'Bash'],
-        setting_sources=['user'],
+        allowed_tools=allowed_tools,
+        setting_sources=setting_sources,
     )
 
     initial_prompt = (
@@ -379,6 +396,9 @@ def docker_main():
     interactive = '--interactive' in raw_args
     args = [a for a in raw_args if a != '--interactive']
 
+    enable_skill = _parse_env_bool('AE_ENABLE_SKILL', False)
+    enable_subagent = _parse_env_bool('AE_ENABLE_SUBAGENT', False)
+
     # Mode 1 — interactive-only (no task): runner.py --interactive [model]
     if interactive and len(args) <= 1:
         model = args[0] if args else os.environ.get('AE_AGENT_MODEL', DEFAULT_MODEL)
@@ -389,6 +409,8 @@ def docker_main():
                 'Please confirm you are in /repo and ready for follow-up instructions. Reply briefly.',
                 system_prompt=_INTERACTIVE_SYSTEM_PROMPT,
                 interactive=True,
+                enable_skill=enable_skill,
+                enable_subagent=enable_subagent,
             )
         )
         sys.exit(result['exit_code'])
@@ -432,6 +454,8 @@ def docker_main():
                     artifact_path=artifact_path,
                     timeout_ms=timeout_ms,
                     interactive=True,
+                    enable_skill=enable_skill,
+                    enable_subagent=enable_subagent,
                 )
             )
         else:
@@ -443,6 +467,8 @@ def docker_main():
                         env='docker',
                         artifact_path=artifact_path,
                         timeout_ms=timeout_ms,
+                        enable_skill=enable_skill,
+                        enable_subagent=enable_subagent,
                     ),
                     timeout=timeout_ms / 1000.0,
                 )

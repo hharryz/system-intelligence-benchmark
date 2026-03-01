@@ -182,5 +182,67 @@ The benchmark supports multiple AI agents:
 - **Claude Code**: Anthropic's code assistant
 - **Mini SWE Agent**: The compact version of [SWE-agent](https://github.com/SWE-agent) assistant
 - **OpenHands**: Open-source coding agent
+- **ae_agent**: Claude Agent SDK–based agent (same logic as the standalone [artifact-agent](https://github.com/sys-intelligence/artifact-agent) repo), with full support for host/Docker, interactive mode, Skill, Sub-agent, per-task timeout, GPU, and optional container sync/commit/stop.
 
 To add your own agent to the benchmark, see [add_agents.md](add_agents.md).
+
+#### » ae_agent usage and options
+
+When using the **ae_agent** (`-a ae_agent` or `-a ae-agent`), you can pass the following from the command line and/or the task JSONL.
+
+**Command-line arguments**
+
+| Argument | Description |
+|----------|-------------|
+| `-i`, `--input_file` | Input JSONL file with tasks (default: `./data/benchmark/arteval_tasks.jsonl`). |
+| `-o`, `--save_path` | Directory for results (default: `./outputs/ae_<model>_ae-agent_<timestamp>`). |
+| `-a`, `--agent` | Agent name; use `ae_agent` or `ae-agent` for this agent. |
+| `-m`, `--model_name` | Model name (e.g. `claude-sonnet-4-5-20250929`). |
+| `--interactive` | After the task completes, keep a session open so you can give more instructions (requires a TTY). In Docker mode the runner is executed in the foreground via `docker exec -it`. |
+| `--enable-skill` | Enable Claude Agent SDK Skill (load from `~/.claude/skills/` and `.claude/skills/`). |
+| `--enable-subagent` | Enable Claude Agent SDK Sub-agent (Task tool). |
+
+**JSONL task fields (per line)**
+
+| Field | Description |
+|-------|-------------|
+| `artifact_id` | Unique task identifier. |
+| `artifact_dir` | Artifact directory name (relative to the JSONL file’s directory). |
+| `artifact_readme` | Path to the README or task description file (relative to artifact root). |
+| `artifact_url` | Optional. Git clone URL; used when `artifact_dir` is missing or the path does not exist. |
+| `env` | `"local"` for host; Docker image name (e.g. `bastoica/ae-agent-ubuntu24.04:latest`) for Docker. |
+| `evaluator` | Command to run after the agent (e.g. `python _agent_eval/main.py`). |
+| `expected_score` | Expected score for this artifact (default 4). |
+| `timeout` | Optional. Per-task timeout in seconds or milliseconds (see utils: values &lt; 86400 are seconds, else milliseconds). |
+| `gpu` | Optional. When `true`, pass `--gpus all` to Docker (Docker mode only). |
+| `interactive` | Optional. When `true`, enable interactive mode for this task (overrides CLI default). |
+| `enable_skill` | Optional. When `true`, enable Skill for this task. |
+| `enable_subagent` | Optional. When `true`, enable Sub-agent for this task. |
+| `keep_container` | Optional. When `false` (default for ae_agent), after the run the workspace is synced from the container to the host, the container is committed as an image, and the container is stopped. When `true`, the container is left running for inspection. |
+
+**Examples**
+
+```sh
+# Host mode, default options
+python src/main.py -i ./data/benchmark/arteval_tasks.jsonl -a ae_agent -o ./outputs/run1
+
+# With interactive mode (TTY required for Docker)
+python src/main.py --interactive -i ./data/benchmark/arteval_tasks.jsonl -a ae_agent -o ./outputs/run2
+
+# Enable Skill and Sub-agent
+python src/main.py --enable-skill --enable-subagent -i ./data/benchmark/arteval_tasks.jsonl -a ae_agent -o ./outputs/run3
+```
+
+**Outputs (when using ae_agent)**
+
+Results are written under the given `save_path`:
+
+- `result.jsonl` — One JSON object per task (task_id, status, score, agent_run_results, etc.).
+- `avg_score.json` — Benchmark summary (final_score, total_tasks).
+- `ae_report_<artifact_id>.md` — Per-task report (status, project path, log file, agent summary, and optional Docker image instructions).
+- `summary.json` — Total and successful task counts and success rate (same format as standalone artifact-agent).
+- When running via the benchmark entry, log paths and agent summary are filled from available data; standalone `python -m ae_agent.main` also produces `ae_log_<artifact_id>.log`.
+
+**Docker + interactive**
+
+For Docker tasks with `interactive: true` (or `--interactive`), the benchmark runs the agent in the foreground via `docker exec -it` so you can interact in the same terminal. This requires a real TTY (e.g. running `python src/main.py ...` in a terminal, not under CI or with redirected stdin). If stdin is not a TTY, the run falls back to non-interactive (background runner) and a warning is logged.

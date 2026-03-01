@@ -54,15 +54,15 @@ def setup_claude_settings_on_host():
     
     settings = {
         "env": {
-            "BASH_MAX_TIMEOUT_MS": "172800000",  # 48 hours
-            "BASH_DEFAULT_TIMEOUT_MS": "172800000"
+            "BASH_MAX_TIMEOUT_MS": "345600000",  # 96 hours
+            "BASH_DEFAULT_TIMEOUT_MS": "345600000"
         }
     }
     
     with open(settings_file, 'w') as f:
         json.dump(settings, f, indent=2)
     
-    logger.info(f"Created {settings_file} with 48-hour timeout configuration.")
+    logger.info(f"Created {settings_file} with 96-hour timeout configuration.")
 
 
 def _is_ae_agent_path(agent_path) -> bool:
@@ -73,7 +73,97 @@ def _is_ae_agent_path(agent_path) -> bool:
     return p.endswith("ae_agent") or os.path.basename(p) == "ae_agent"
 
 
-async def run_eval_on_host(project_path, task_id, task, model, agent_path, test_method, save_path):
+def _stdin_is_tty() -> bool:
+    """True if stdin is a TTY (required for docker exec -it)."""
+    return getattr(sys.stdin, "isatty", lambda: False)()
+
+
+async def _get_container_id_from_runtime(runtime, deployment) -> str:
+    """Get Docker container ID from inside the container (hostname/cgroup) or from deployment."""
+    container_id = "unknown"
+    try:
+        res = await runtime.run_in_session(
+            BashAction(command='cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo "unknown"', timeout=10.0)
+        )
+        container_id = str(getattr(res, "output", "")).strip()
+        try:
+            cgroup_res = await runtime.run_in_session(
+                BashAction(command='cat /proc/self/cgroup 2>/dev/null | grep docker | head -1 | cut -d/ -f3 | cut -c1-12 || echo ""', timeout=10.0)
+            )
+            cid = str(getattr(cgroup_res, "output", "")).strip()
+            if cid:
+                container_id = cid
+        except Exception:
+            pass
+        if hasattr(deployment, '_container_id') and getattr(deployment, '_container_id', None):
+            container_id = deployment._container_id
+        elif hasattr(deployment, 'container_id') and getattr(deployment, 'container_id', None):
+            container_id = deployment.container_id
+    except Exception as e:
+        logger.warning('Failed to get container ID: %s', e)
+    return container_id
+
+
+async def _run_ae_agent_interactive_foreground(
+    container_id: str,
+    model: str,
+    timeout_ms: int | None,
+    enable_skill: bool,
+    enable_subagent: bool,
+):
+    """Run ae_agent runner in foreground via docker exec -it (interactive mode). Returns MockResult with exit_code."""
+    try:
+        from agents.ae_agent.utils import resolve_timeout_ms
+        from agents.ae_agent.run_eval import _docker_exec_env_args
+    except ImportError:
+        _src = os.path.dirname(os.path.abspath(__file__))
+        if _src not in sys.path:
+            sys.path.insert(0, _src)
+        from agents.ae_agent.utils import resolve_timeout_ms
+        from agents.ae_agent.run_eval import _docker_exec_env_args
+
+    timeout_resolved = resolve_timeout_ms(timeout_ms)
+    exec_env = _docker_exec_env_args(
+        timeout_resolved,
+        enable_skill=enable_skill,
+        enable_subagent=enable_subagent,
+    )
+    exec_args = (
+        ['docker', 'exec', '-it']
+        + exec_env
+        + [container_id, 'python3', '-u', '/agent/runner.py', model, '/agent/current_task.txt', '--interactive']
+    )
+    logger.info('Running ae_agent in interactive mode (foreground): docker exec -it %s ...', container_id[:12])
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        exec_args,
+        stdin=sys.stdin,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+    )
+    exit_code = proc.returncode if proc else -1
+
+    class MockResult:
+        def __init__(self, code, output=''):
+            self.exit_code = code
+            self.output = output or f'exit_code={code}'
+
+    return MockResult(exit_code, f'Interactive session (exit_code={exit_code})')
+
+
+async def run_eval_on_host(
+    project_path,
+    task_id,
+    task,
+    model,
+    agent_path,
+    test_method,
+    save_path,
+    timeout_ms=None,
+    interactive=False,
+    enable_skill=False,
+    enable_subagent=False,
+):
     """Run evaluation directly on host machine (no Docker container).
 
     When agent is ae_agent, delegates to ae_agent.run_agent_then_eval (agent run + evaluation script),
@@ -99,8 +189,11 @@ async def run_eval_on_host(project_path, task_id, task, model, agent_path, test_
             model=model,
             test_method=test_method,
             save_path=save_path,
-            timeout_ms=None,
+            timeout_ms=timeout_ms,
             skip_prereq_check=False,
+            interactive=interactive,
+            enable_skill=enable_skill,
+            enable_subagent=enable_subagent,
         )
         return result
 
@@ -169,8 +262,8 @@ IMPORTANT GUIDELINES:
         setting_sources=["user"],
     )
 
-    os.environ['BASH_MAX_TIMEOUT_MS'] = '172800000'
-    os.environ['BASH_DEFAULT_TIMEOUT_MS'] = '172800000'
+    os.environ['BASH_MAX_TIMEOUT_MS'] = '345600000'
+    os.environ['BASH_DEFAULT_TIMEOUT_MS'] = '345600000'
 
     logger.info("Starting Claude Agent SDK (Host Mode)...")
 
@@ -234,16 +327,32 @@ IMPORTANT GUIDELINES:
     return result
 
 
-async def run_eval_in_env(deployment, project_path, task_id, task, model, agent_path, test_method, save_path):
+async def run_eval_in_env(
+    deployment,
+    project_path,
+    task_id,
+    task,
+    model,
+    agent_path,
+    test_method,
+    save_path,
+    timeout_ms=None,
+    gpu=False,
+    interactive=False,
+    enable_skill=False,
+    enable_subagent=False,
+    keep_container=True,
+):
     """Spoiler: This function will work with any deployment."""
     await deployment.start()
     runtime = deployment.runtime
 
+    # Default 96h when timeout_ms not provided
+    runner_timeout_sec = (timeout_ms / 1000.0) if timeout_ms is not None else 345600.0
     if hasattr(runtime, "_config"):
         logger.info(f"Current RemoteRuntime timeout: {runtime._config.timeout}s")
-        # 48 hours = 172800s (aligned with Bash command timeout)
-        runtime._config.timeout = 172800.0
-        logger.info(f"Overriding RemoteRuntime timeout to {runtime._config.timeout}s (48 hours)")
+        runtime._config.timeout = runner_timeout_sec
+        logger.info(f"Overriding RemoteRuntime timeout to {runtime._config.timeout}s")
 
     # Issue a few one-off commands, similar to `subprocess.run()`
     logger.info(await runtime.execute(Command(command=['echo', 'Hello, world!'])))
@@ -321,6 +430,10 @@ async def run_eval_in_env(deployment, project_path, task_id, task, model, agent_
             parts.append(f"export ANTHROPIC_FOUNDRY_BASE_URL='{escaped_url}'")
         if os.environ.get('CLAUDE_CODE_USE_FOUNDRY') == '1':
             parts.append("export CLAUDE_CODE_USE_FOUNDRY=1")
+        if enable_skill:
+            parts.append("export AE_ENABLE_SKILL=1")
+        if enable_subagent:
+            parts.append("export AE_ENABLE_SUBAGENT=1")
         if parts:
             set_env_cmd = " && ".join(parts)
             logger.info('Setting Anthropic/Foundry API key and env in container...')
@@ -342,127 +455,146 @@ async def run_eval_in_env(deployment, project_path, task_id, task, model, agent_
         logger.info('Task file uploaded to /agent/current_task.txt for ae_agent.')
 
     logger.info('Running runner script...')
-    runner_timeout = 172800.0 if is_long_running_agent else 1200.0  # 48h for claude_sdk/ae_agent
-
-    if is_long_running_agent:
-        # Live log monitoring: run runner in background, poll log file periodically
-        await runtime.run_in_session(BashAction(command='rm -f /agent/runner.live.log && touch /agent/runner.live.log', timeout=10.0))
-
-        # ae_agent: use task file to avoid shell quoting; others pass task string
-        if is_ae_agent:
-            start_cmd = (
-                'stdbuf -oL -eL /agent/runner.sh "' + model + '" /agent/current_task.txt > /agent/runner.live.log 2>&1 & '
-                'RUNNER_PID=$!; '
-                'sleep 1; '
-                'echo RUNNER_PID=$RUNNER_PID'
-            )
-        else:
-            start_cmd = (
-                f'bash -c "stdbuf -oL -eL /agent/runner.sh \\"{model}\\" \\"{task}\\" > /agent/runner.live.log 2>&1 & '
-                'RUNNER_PID=$!; '
-                'sleep 1; '
-                'echo RUNNER_PID=$RUNNER_PID"'
-            )
-        start_res = await runtime.run_in_session(BashAction(command=start_cmd, timeout=30.0))
-        start_output = str(getattr(start_res, "output", "")).strip()
-
-        pid = None
-        for line in start_output.split('\n'):
-            if 'RUNNER_PID=' in line:
-                pid = line.split('RUNNER_PID=', 1)[1].strip()
-                break
-
-        if not pid or not pid.isdigit():
-            # Fallback: find PID by process name after short delay
-            await asyncio.sleep(2)
-            ps_res = await runtime.run_in_session(
-                BashAction(command="ps aux | grep '[r]unner.py' | awk '{print $2}' | head -1", timeout=10.0)
-            )
-            pid = str(getattr(ps_res, "output", "")).strip()
-        
-        logger.info(f'{agent_label} runner started with pid: {pid}')
-
-        await asyncio.sleep(2)  # Allow log file to have content
-
-        elapsed = 0.0
-        poll_interval = 10.0  # Poll every 10s for live log
-        run_results = None
-        last_log_content = ""  # Track last read content to avoid duplicate output
-
-        while elapsed < runner_timeout:
-            try:
-                log_res = await runtime.run_in_session(
-                    BashAction(command='cat /agent/runner.live.log 2>/dev/null || echo ""', timeout=30.0)
-                )
-                current_log_content = str(getattr(log_res, "output", "")).strip()
-
-                if current_log_content and current_log_content != last_log_content:
-                    if last_log_content and current_log_content.startswith(last_log_content):
-                        new_content = current_log_content[len(last_log_content):].strip()
-                        if new_content:
-                            logger.info(f'[{agent_label} live log @ {elapsed:.0f}s ({elapsed/60:.1f} min)]\n{new_content}')
-                    else:
-                        logger.info(f'[{agent_label} live log @ {elapsed:.0f}s ({elapsed/60:.1f} min)]\n{current_log_content}')
-                    last_log_content = current_log_content
-                elif elapsed % 300 == 0 and elapsed > 0:
-                    logger.info(f'[{agent_label} still running @ {elapsed:.0f}s ({elapsed/60:.1f} min), no new output]')
-            except Exception as e:
-                logger.info(f'Failed to read {agent_label} live log: {e}')
-
-            if pid and pid.isdigit():
-                ps_res = await runtime.run_in_session(
-                    BashAction(command=f'ps -p {pid} >/dev/null 2>&1; echo $?', timeout=10.0)
-                )
-                ps_code = str(getattr(ps_res, "output", "")).strip()
-                if ps_code != "0":
-                    wait_res = await runtime.run_in_session(
-                        BashAction(command=f'wait {pid} 2>/dev/null; echo $?', timeout=30.0)
-                    )
-                    exit_code_str = str(getattr(wait_res, "output", "")).strip()
-
-                    class MockResult:
-                        def __init__(self, code):
-                            self.exit_code = int(code) if code.isdigit() else 0
-                            self.output = f'exit_code={self.exit_code}'
-                    run_results = MockResult(exit_code_str)
-                    logger.info(f'{agent_label} runner finished with exit code: {run_results.exit_code}')
-                    break
-            else:
-                ps_res = await runtime.run_in_session(
-                    BashAction(command="ps aux | grep '[r]unner.py' | wc -l", timeout=10.0)
-                )
-                proc_count = str(getattr(ps_res, "output", "")).strip()
-                if proc_count == "0" or not proc_count.isdigit() or int(proc_count) == 0:
-                    logger.info(f'{agent_label} runner process not found, assuming finished')
-                    class MockResult:
-                        def __init__(self):
-                            self.exit_code = 0
-                            self.output = 'exit_code=0'
-                    run_results = MockResult()
-                    break
-
-            await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
-
-        if run_results is None:
-            # Timeout: try to kill process and capture final log
-            if pid and pid.isdigit():
-                try:
-                    await runtime.run_in_session(BashAction(command=f'kill -TERM {pid} 2>/dev/null || kill -9 {pid} 2>/dev/null || true', timeout=10.0))
-                except Exception:
-                    pass
-            try:
-                tail_log = await runtime.run_in_session(
-                    BashAction(command='tail -n 200 /agent/runner.live.log', timeout=30.0)
-                )
-                logger.info(f'{agent_label} live log tail (on timeout):\n{tail_log}')
-            except Exception as e:
-                logger.info(f'Failed to read {agent_label} live log after timeout: {e}')
-            raise TimeoutError(f'{agent_label} runner exceeded timeout {runner_timeout}s')
-
+    if timeout_ms is not None:
+        runner_timeout = timeout_ms / 1000.0
     else:
-        runner_cmd = f'/agent/runner.sh "{model}" "{task}"'
-        run_results = await runtime.run_in_session(BashAction(command=runner_cmd, timeout=runner_timeout))
+        runner_timeout = 345600.0 if is_long_running_agent else 1200.0  # 96h for long-running agents
+
+    run_results = None
+    # Docker + interactive: run ae_agent in foreground via docker exec -it (same as standalone ae-agent).
+    if is_ae_agent and interactive and _stdin_is_tty():
+        container_id_early = await _get_container_id_from_runtime(runtime, deployment)
+        if container_id_early and container_id_early != "unknown":
+            try:
+                run_results = await _run_ae_agent_interactive_foreground(
+                    container_id_early, model, timeout_ms, enable_skill, enable_subagent
+                )
+                logger.info('ae_agent interactive session finished with exit_code=%s', run_results.exit_code)
+            except Exception as e:
+                logger.warning('ae_agent interactive foreground failed: %s', e)
+        else:
+            logger.warning('Cannot get container ID for interactive mode; falling back to non-interactive.')
+
+    if run_results is None:
+        if is_long_running_agent:
+            # Live log monitoring: run runner in background, poll log file periodically
+            await runtime.run_in_session(BashAction(command='rm -f /agent/runner.live.log && touch /agent/runner.live.log', timeout=10.0))
+
+            # ae_agent: use task file to avoid shell quoting; others pass task string
+            if is_ae_agent:
+                start_cmd = (
+                    'stdbuf -oL -eL /agent/runner.sh "' + model + '" /agent/current_task.txt > /agent/runner.live.log 2>&1 & '
+                    'RUNNER_PID=$!; '
+                    'sleep 1; '
+                    'echo RUNNER_PID=$RUNNER_PID'
+                )
+            else:
+                start_cmd = (
+                    f'bash -c "stdbuf -oL -eL /agent/runner.sh \\"{model}\\" \\"{task}\\" > /agent/runner.live.log 2>&1 & '
+                    'RUNNER_PID=$!; '
+                    'sleep 1; '
+                    'echo RUNNER_PID=$RUNNER_PID"'
+                )
+            start_res = await runtime.run_in_session(BashAction(command=start_cmd, timeout=30.0))
+            start_output = str(getattr(start_res, "output", "")).strip()
+
+            pid = None
+            for line in start_output.split('\n'):
+                if 'RUNNER_PID=' in line:
+                    pid = line.split('RUNNER_PID=', 1)[1].strip()
+                    break
+
+            if not pid or not pid.isdigit():
+                # Fallback: find PID by process name after short delay
+                await asyncio.sleep(2)
+                ps_res = await runtime.run_in_session(
+                    BashAction(command="ps aux | grep '[r]unner.py' | awk '{print $2}' | head -1", timeout=10.0)
+                )
+                pid = str(getattr(ps_res, "output", "")).strip()
+
+            logger.info(f'{agent_label} runner started with pid: {pid}')
+
+            await asyncio.sleep(2)  # Allow log file to have content
+
+            elapsed = 0.0
+            poll_interval = 10.0  # Poll every 10s for live log
+            run_results = None
+            last_log_content = ""  # Track last read content to avoid duplicate output
+
+            while elapsed < runner_timeout:
+                try:
+                    log_res = await runtime.run_in_session(
+                        BashAction(command='cat /agent/runner.live.log 2>/dev/null || echo ""', timeout=30.0)
+                    )
+                    current_log_content = str(getattr(log_res, "output", "")).strip()
+
+                    if current_log_content and current_log_content != last_log_content:
+                        if last_log_content and current_log_content.startswith(last_log_content):
+                            new_content = current_log_content[len(last_log_content):].strip()
+                            if new_content:
+                                logger.info(f'[{agent_label} live log @ {elapsed:.0f}s ({elapsed/60:.1f} min)]\n{new_content}')
+                        else:
+                            logger.info(f'[{agent_label} live log @ {elapsed:.0f}s ({elapsed/60:.1f} min)]\n{current_log_content}')
+                        last_log_content = current_log_content
+                    elif elapsed % 300 == 0 and elapsed > 0:
+                        logger.info(f'[{agent_label} still running @ {elapsed:.0f}s ({elapsed/60:.1f} min), no new output]')
+                except Exception as e:
+                    logger.info(f'Failed to read {agent_label} live log: {e}')
+
+                if pid and pid.isdigit():
+                    ps_res = await runtime.run_in_session(
+                        BashAction(command=f'ps -p {pid} >/dev/null 2>&1; echo $?', timeout=10.0)
+                    )
+                    ps_code = str(getattr(ps_res, "output", "")).strip()
+                    if ps_code != "0":
+                        wait_res = await runtime.run_in_session(
+                            BashAction(command=f'wait {pid} 2>/dev/null; echo $?', timeout=30.0)
+                        )
+                        exit_code_str = str(getattr(wait_res, "output", "")).strip()
+
+                        class MockResult:
+                            def __init__(self, code):
+                                self.exit_code = int(code) if code.isdigit() else 0
+                                self.output = f'exit_code={self.exit_code}'
+                        run_results = MockResult(exit_code_str)
+                        logger.info(f'{agent_label} runner finished with exit code: {run_results.exit_code}')
+                        break
+                else:
+                    ps_res = await runtime.run_in_session(
+                        BashAction(command="ps aux | grep '[r]unner.py' | wc -l", timeout=10.0)
+                    )
+                    proc_count = str(getattr(ps_res, "output", "")).strip()
+                    if proc_count == "0" or not proc_count.isdigit() or int(proc_count) == 0:
+                        logger.info(f'{agent_label} runner process not found, assuming finished')
+                        class MockResult:
+                            def __init__(self):
+                                self.exit_code = 0
+                                self.output = 'exit_code=0'
+                        run_results = MockResult()
+                        break
+
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+            if run_results is None:
+                # Timeout: try to kill process and capture final log
+                if pid and pid.isdigit():
+                    try:
+                        await runtime.run_in_session(BashAction(command=f'kill -TERM {pid} 2>/dev/null || kill -9 {pid} 2>/dev/null || true', timeout=10.0))
+                    except Exception:
+                        pass
+                try:
+                    tail_log = await runtime.run_in_session(
+                        BashAction(command='tail -n 200 /agent/runner.live.log', timeout=30.0)
+                    )
+                    logger.info(f'{agent_label} live log tail (on timeout):\n{tail_log}')
+                except Exception as e:
+                    logger.info(f'Failed to read {agent_label} live log after timeout: {e}')
+                raise TimeoutError(f'{agent_label} runner exceeded timeout {runner_timeout}s')
+
+        else:
+            runner_cmd = f'/agent/runner.sh "{model}" "{task}"'
+            run_results = await runtime.run_in_session(BashAction(command=runner_cmd, timeout=runner_timeout))
     logger.info(f"agent's run results: {run_results}")
     logger.info('Runner script finished.')
 
@@ -516,54 +648,49 @@ async def run_eval_in_env(deployment, project_path, task_id, task, model, agent_
             'status': f'error: {str(e)}',
         }
 
-    # For long-running agents: keep container running for inspection
+    # For long-running agents: sync+stop (when keep_container=False) or keep container for inspection
     if is_long_running_agent:
-        logger.info('=' * 80)
-        logger.info(f'Keeping Docker container running for {agent_label} (for debugging purposes).')
+        container_id = await _get_container_id_from_runtime(runtime, deployment)
+        container_name = (
+            getattr(deployment, '_container_name', None)
+            or getattr(deployment, 'container_name', None)
+            or 'unknown'
+        )
 
-        container_id = "unknown"
-        container_name = "unknown"
-        try:
-            container_id_res = await runtime.run_in_session(
-                BashAction(command='cat /etc/hostname 2>/dev/null || hostname 2>/dev/null || echo "unknown"', timeout=10.0)
-            )
-            container_id = str(getattr(container_id_res, "output", "")).strip()
-
+        if is_ae_agent and not keep_container and container_id and container_id != "unknown":
+            # Original artifact-agent behavior: sync workspace, commit image, stop container
             try:
-                docker_info_res = await runtime.run_in_session(
-                    BashAction(command='cat /proc/self/cgroup 2>/dev/null | grep docker | head -1 | cut -d/ -f3 | cut -c1-12 || echo ""', timeout=10.0)
-                )
-                docker_container_id = str(getattr(docker_info_res, "output", "")).strip()
-                if docker_container_id:
-                    container_id = docker_container_id
-            except Exception:
-                pass
-
-            if hasattr(deployment, '_container_id'):
-                container_id = deployment._container_id
-            elif hasattr(deployment, 'container_id'):
-                container_id = deployment.container_id
-            if hasattr(deployment, '_container_name'):
-                container_name = deployment._container_name
-            elif hasattr(deployment, 'container_name'):
-                container_name = deployment.container_name
-        except Exception as e:
-            logger.warning(f'Failed to get container information: {e}')
-        
-        logger.info(f'Container Information:')
-        logger.info(f'  Container ID: {container_id}')
-        logger.info(f'  Container Name: {container_name}')
-        logger.info(f'  Task ID: {task_id}')
-        logger.info(f'  Project Path: {project_path}')
-        logger.info(f'  To inspect the container, use: docker exec -it {container_id} /bin/bash')
-        logger.info(f'  Or find container by name/image and inspect manually')
-        logger.info(f'  NOTE: Container will remain running. To stop it manually, use: docker stop {container_id}')
-        logger.info(f'  WARNING: Remember to clean up containers to save storage space!')
-        logger.info('=' * 80)
-
-        result['container_id'] = container_id
-        result['container_name'] = container_name
-        result['container_kept'] = True
+                from agents.ae_agent.run_eval import save_container_after_run
+                saved_image, container_stopped = save_container_after_run(container_id, project_path, task_id)
+                result['saved_image'] = saved_image
+                result['container_stopped'] = container_stopped
+                result['container_id'] = container_id
+                result['container_kept'] = False
+                logger.info(f'ae_agent: synced workspace, saved image={saved_image}, stopped={container_stopped}')
+            except Exception as e:
+                logger.warning(f'save_container_after_run failed: {e}')
+                result['container_id'] = container_id
+                result['container_kept'] = True
+            try:
+                await deployment.stop()
+            except Exception as e:
+                logger.warning(f'deployment.stop() failed: {e}')
+        elif keep_container:
+            logger.info('=' * 80)
+            logger.info(f'Keeping Docker container running for {agent_label} (for debugging purposes).')
+            logger.info(f'Container ID: {container_id}')
+            logger.info(f'Task ID: {task_id}')
+            logger.info(f'Project Path: {project_path}')
+            logger.info(f'  To inspect: docker exec -it {container_id} /bin/bash')
+            logger.info(f'  To stop: docker stop {container_id}')
+            logger.info('=' * 80)
+            result['container_id'] = container_id
+            result['container_name'] = container_name
+            result['container_kept'] = True
+        else:
+            await deployment.stop()
+            result['container_id'] = container_id
+            result['container_kept'] = False
     else:
         await deployment.stop()
         result['container_kept'] = False
@@ -572,9 +699,25 @@ async def run_eval_in_env(deployment, project_path, task_id, task, model, agent_
     return result
 
 
-def run_eval(deployment, project_path, task_id, task, model, agent_path, test_method, save_path, run_on_host=False):
+def run_eval(
+    deployment,
+    project_path,
+    task_id,
+    task,
+    model,
+    agent_path,
+    test_method,
+    save_path,
+    run_on_host=False,
+    timeout_ms=None,
+    gpu=False,
+    interactive=False,
+    enable_skill=False,
+    enable_subagent=False,
+    keep_container=True,
+):
     """Run evaluation either on host or in Docker container.
-    
+
     Args:
         deployment: Docker image to use (ignored if run_on_host=True)
         project_path: Path to the artifact project
@@ -585,36 +728,67 @@ def run_eval(deployment, project_path, task_id, task, model, agent_path, test_me
         test_method: Evaluation command
         save_path: Path to save results
         run_on_host: If True, run directly on host machine instead of Docker
+        timeout_ms: Per-task timeout in milliseconds (None = default 96h for long-running agents)
+        gpu: If True, pass --gpus all to Docker (Docker mode only)
+        interactive: If True, enable interactive mode after task (ae_agent only)
+        enable_skill: If True, enable Claude Agent SDK Skill (ae_agent only)
+        enable_subagent: If True, enable Claude Agent SDK Sub-agent (ae_agent only)
+        keep_container: If False and ae_agent, sync workspace + commit image + stop container after run
     """
-    
+
     if run_on_host:
-        # Run directly on host machine (no Docker container)
         logger.info(f"Task {task_id} configured to run on HOST machine (run_on_host=True)")
         return asyncio.run(
-            run_eval_on_host(project_path, task_id, task, model, agent_path, test_method, save_path)
+            run_eval_on_host(
+                project_path,
+                task_id,
+                task,
+                model,
+                agent_path,
+                test_method,
+                save_path,
+                timeout_ms=timeout_ms,
+                interactive=interactive,
+                enable_skill=enable_skill,
+                enable_subagent=enable_subagent,
+            )
         )
-    
-    # Run in Docker container (original behavior)
+
+    # Run in Docker container
     image = deployment or 'bastoica/ae-agent-ubuntu24.04:latest'
 
-    # Enable privileged mode for Docker-in-Docker scenarios (e.g., Kind clusters)
-    # This is required for Kubernetes-based artifact evaluations like Acto
-    # Additional args for cgroups v2 compatibility:
-    # - --cgroupns=host: Share cgroup namespace with host (required for Kind in cgroups v2)
-    # - Environment variables for Kind cgroups v2 compatibility
+    docker_args = [
+        '--privileged',
+        '--cgroupns=host',
+        '-e', 'KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER=native',
+    ]
+    if gpu:
+        docker_args.extend(['--gpus', 'all'])
+
     config = DockerDeploymentConfig(
         image=image,
         startup_timeout=1200.0,
-        docker_args=[
-            '--privileged',  # Required for Kind cluster creation
-            '--cgroupns=host',  # Required for Kind nodes to start with cgroups v2
-            '-e', 'KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER=native',  # Better cgroups v2 support
-        ],
+        docker_args=docker_args,
     )
     deployment_obj = config.get_deployment()
 
     return asyncio.run(
-        run_eval_in_env(deployment_obj, project_path, task_id, task, model, agent_path, test_method, save_path)
+        run_eval_in_env(
+            deployment_obj,
+            project_path,
+            task_id,
+            task,
+            model,
+            agent_path,
+            test_method,
+            save_path,
+            timeout_ms=timeout_ms,
+            gpu=gpu,
+            interactive=interactive,
+            enable_skill=enable_skill,
+            enable_subagent=enable_subagent,
+            keep_container=keep_container,
+        )
     )
 
 

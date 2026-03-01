@@ -19,7 +19,47 @@ set_llm_endpoint_from_config('env.toml')
 from run_eval_in_env import run_eval
 from utils import get_task
 
-def main(file_path, model, agent, save_path):
+from agents.ae_agent.utils import (
+    enable_skill_from_item,
+    enable_subagent_from_item,
+    gpu_from_item,
+    interactive_from_item,
+    resolve_project_path,
+    safe_task_id,
+    timeout_ms_from_item,
+    write_task_report,
+    compute_and_write_summary,
+)
+
+
+def _persist_skipped(save_path: str, task_id: str, message: str, expected_score: int = -1) -> None:
+    """Append one result line for a skipped task so summary total is accurate (same as ae-agent)."""
+    result = {
+        'task_id': task_id,
+        'status': 'skipped',
+        'message': message,
+        'expected_score': expected_score,
+    }
+    with open(os.path.join(save_path, 'result.jsonl'), 'a+', encoding='utf-8') as fw:
+        fw.write(json.dumps(result, ensure_ascii=False) + '\n')
+
+
+def _parse_bool(v, default=False):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ('true', '1', 'yes')
+    return bool(v) if v is not None else default
+
+
+def _is_ae_agent(agent):
+    """True if agent path points to the ae_agent (for report/summary writing)."""
+    if not agent:
+        return False
+    return 'ae_agent' in agent or os.path.basename(agent) == 'ae_agent'
+
+
+def main(file_path, model, agent, save_path, interactive_default=False, enable_skill_default=False, enable_subagent_default=False):
     """Main function for running the benchmark."""
     logger.info(f'Using model: {model}, agent: {agent}')
     with open(file_path) as f:
@@ -45,14 +85,34 @@ def main(file_path, model, agent, save_path):
             else:
                 deployment = item.get('docker_env', None) or item.get('docer_env', None)
                 run_on_host = item.get('run_on_host', False)
-            project_path = f"./data/benchmark/{item.get('artifact_dir', None)}"
-            task_file = item.get('artifact_readme', None)
             task_id = item.get('artifact_id', None)
+            project_path, path_error = resolve_project_path(item, file_path, save_path)
+            if path_error:
+                logger.info(f"Task {task_id}: {path_error}")
+                _persist_skipped(
+                    save_path,
+                    task_id or safe_task_id(task_id),
+                    path_error,
+                    item.get('expected_score', -1),
+                )
+                continue
+            task_file = item.get('artifact_readme', None)
             test_method = item.get('evaluator', None)
+
+            timeout_ms = timeout_ms_from_item(item)
+            gpu = gpu_from_item(item)
+            interactive = interactive_from_item(item) or interactive_default
+            enable_skill = enable_skill_from_item(item, enable_skill_default)
+            enable_subagent = enable_subagent_from_item(item, enable_subagent_default)
+            keep_container = _parse_bool(item.get('keep_container'), False)
 
             task = get_task(task_file)
 
-            logger.info(f"Task {task_id}: run_on_host={run_on_host}")
+            logger.info(
+                f"Task {task_id}: project_path={project_path}, run_on_host={run_on_host}, "
+                f"timeout_ms={timeout_ms}, gpu={gpu}, interactive={interactive}, "
+                f"enable_skill={enable_skill}, enable_subagent={enable_subagent}, keep_container={keep_container}"
+            )
 
             result = run_eval(
                 deployment=deployment,
@@ -63,12 +123,36 @@ def main(file_path, model, agent, save_path):
                 agent_path=agent,
                 test_method=test_method,
                 save_path=save_path,
-                run_on_host=run_on_host,  # Pass the flag
+                run_on_host=run_on_host,
+                timeout_ms=timeout_ms,
+                gpu=gpu,
+                interactive=interactive,
+                enable_skill=enable_skill,
+                enable_subagent=enable_subagent,
+                keep_container=keep_container,
             )
 
             result['expected_score'] = item.get('expected_score', -1)
+            result['timestamp'] = result.get('timestamp') or datetime.now().isoformat()
             with open(f'{save_path}/result.jsonl', 'a+', encoding='utf-8') as fw:
-                fw.write(json.dumps(result) + '\n')
+                fw.write(json.dumps(result, ensure_ascii=False) + '\n')
+
+            # When using ae_agent, also write per-task AE report (same as standalone ae-agent).
+            if _is_ae_agent(agent):
+                safe_id = safe_task_id(task_id)
+                log_path = result.get('log_file') or '(log not captured when run via benchmark)'
+                agent_summary = (result.get('agent_run_results') or '')[:8000] or '(No summary captured)'
+                try:
+                    write_task_report(save_path, safe_id, task_id, result, log_path, agent_summary)
+                except Exception as e:
+                    logger.warning('write_task_report failed: %s', e)
+
+    # Write summary.json (total/success counts) when ae_agent was used.
+    if _is_ae_agent(agent):
+        try:
+            compute_and_write_summary(save_path)
+        except Exception as e:
+            logger.warning('compute_and_write_summary failed: %s', e)
 
     success_count = 0
     total_count = 0
@@ -107,6 +191,21 @@ if __name__ == '__main__':
         help='Model Name',
         default='claude-sonnet-4-5-20250929',
     )
+    parser.add_argument(
+        '--interactive',
+        action='store_true',
+        help='Enable interactive mode (continue giving agent instructions after task completes)',
+    )
+    parser.add_argument(
+        '--enable-skill',
+        action='store_true',
+        help='Enable Claude Agent SDK Skill (load from ~/.claude/skills/)',
+    )
+    parser.add_argument(
+        '--enable-subagent',
+        action='store_true',
+        help='Enable Claude Agent SDK Sub-agent (Task tool)',
+    )
     # Note that if your benchmark has multiple tasks, you need to add --task <task>
     # in your code to enable task selection.
     parser.add_argument('-t', '--task', help='specify task in scenarios', default=None)
@@ -136,4 +235,12 @@ if __name__ == '__main__':
     save_path = os.path.abspath(os.path.expanduser(save_path))
     os.makedirs(save_path, exist_ok=True)
 
-    main(input_file, model_name, agent, save_path)
+    main(
+        input_file,
+        model_name,
+        agent,
+        save_path,
+        interactive_default=getattr(args, 'interactive', False),
+        enable_skill_default=getattr(args, 'enable_skill', False),
+        enable_subagent_default=getattr(args, 'enable_subagent', False),
+    )

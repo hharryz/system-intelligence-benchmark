@@ -25,6 +25,8 @@ from .utils import (
     Tee,
     compute_and_write_summary,
     docker_image_from_item,
+    enable_skill_from_item,
+    enable_subagent_from_item,
     env_from_item,
     get_task,
     gpu_from_item,
@@ -89,12 +91,16 @@ def _run_single_task(
     save_path: str,
     input_file: str,
     interactive_default: bool,
+    enable_skill_default: bool = False,
+    enable_subagent_default: bool = False,
 ) -> None:
     """Process a single JSONL task: parse, run, write results and report."""
     env = env_from_item(item)
     docker_image = docker_image_from_item(item, env=env)
     use_gpu = gpu_from_item(item)
     interactive = interactive_from_item(item) or interactive_default
+    enable_skill = enable_skill_from_item(item, enable_skill_default)
+    enable_subagent = enable_subagent_from_item(item, enable_subagent_default)
     task_file = item.get('artifact_readme', None)
     task_id = item.get('artifact_id', None)
     timeout_ms = timeout_ms_from_item(item)
@@ -115,7 +121,7 @@ def _run_single_task(
         f.write(task)
 
     timeout_str = str(timeout_ms) if timeout_ms is not None else 'default'
-    print(f'Task {task_id}: env={env}, timeout_ms={timeout_str}, gpu={use_gpu}, interactive={interactive}')
+    print(f'Task {task_id}: env={env}, timeout_ms={timeout_str}, gpu={use_gpu}, interactive={interactive}, enable_skill={enable_skill}, enable_subagent={enable_subagent}')
 
     log_path = os.path.join(save_path, f'ae_log_{safe_id}.log')
     with open(log_path, 'w', encoding='utf-8') as lf:
@@ -143,6 +149,8 @@ def _run_single_task(
                     timeout_ms=timeout_ms,
                     use_gpu=use_gpu,
                     interactive=interactive,
+                    enable_skill=enable_skill,
+                    enable_subagent=enable_subagent,
                 )
     except Exception as e:
         sys.stdout, sys.stderr = old_stdout, old_stderr
@@ -160,7 +168,7 @@ def _run_single_task(
     print(f'Task {task_id} completed. Status: {result.get("status", "unknown")}')
 
 
-def main(input_file, model, agent, save_path, interactive_default: bool = False):
+def main(input_file, model, agent, save_path, interactive_default: bool = False, enable_skill_default: bool = False, enable_subagent_default: bool = False):
     """Main function for running tasks."""
     if not os.path.isfile(input_file):
         logging.error('Input file not found: %s', input_file)
@@ -186,6 +194,8 @@ def main(input_file, model, agent, save_path, interactive_default: bool = False)
                 save_path=save_path,
                 input_file=input_file,
                 interactive_default=interactive_default,
+                enable_skill_default=enable_skill_default,
+                enable_subagent_default=enable_subagent_default,
             )
 
     total_count, success_count = compute_and_write_summary(save_path)
@@ -201,6 +211,8 @@ class _ResolvedConfig:
     agent: str
     save_path: str
     interactive_default: bool
+    enable_skill_default: bool
+    enable_subagent_default: bool
 
 
 def _parse_args() -> argparse.Namespace:
@@ -230,6 +242,16 @@ def _parse_args() -> argparse.Namespace:
         action='store_true',
         help='Enable interactive mode (continue giving agent instructions after task completes)',
     )
+    parser.add_argument(
+        '--enable-skill',
+        action='store_true',
+        help='Enable Claude Agent SDK Skill (load from ~/.claude/skills/ and .claude/skills/)',
+    )
+    parser.add_argument(
+        '--enable-subagent',
+        action='store_true',
+        help='Enable Claude Agent SDK Sub-agent (Task tool)',
+    )
     return parser.parse_args()
 
 
@@ -258,6 +280,8 @@ def _resolve_paths(args: argparse.Namespace) -> _ResolvedConfig:
         agent=agent,
         save_path=save_path,
         interactive_default=getattr(args, 'interactive', False),
+        enable_skill_default=getattr(args, 'enable_skill', False),
+        enable_subagent_default=getattr(args, 'enable_subagent', False),
     )
 
 
@@ -274,6 +298,8 @@ def cli_main():
         config.agent,
         config.save_path,
         interactive_default=config.interactive_default,
+        enable_skill_default=config.enable_skill_default,
+        enable_subagent_default=config.enable_subagent_default,
     )
 
 
