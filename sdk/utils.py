@@ -62,22 +62,37 @@ def set_llm_endpoint_from_config(config_path):
                 logger.warning('  - %s', key)
             logger.warning('Only [evaluator_api_keys] values will be used for both evaluator and model under test.')
 
-    # First, set environment variables from [llm]
+    # Placeholder values that should not override an existing env var (e.g. from export)
+    _placeholders = frozenset({'', 'xxx', 'sk-xxxx', 'sk-xxx', 'xxx'})
+
+    def _is_placeholder(val):
+        if val is None:
+            return True
+        s = str(val).strip().lower()
+        return not s or s in _placeholders or s.startswith('sk-xxx')
+
+    # First, set environment variables from [llm] (do not overwrite existing non-placeholder env)
     logger.info('Setting the following environment variables from [llm]:')
     for key, value in llm_config.items():
+        if _is_placeholder(value) and os.environ.get(key) and not _is_placeholder(os.environ.get(key)):
+            logger.info('%s: (keeping existing env)', key)
+            continue
         logger.info('%s', f'{key}: [REDACTED]' if 'key' in key.lower() else f'{key}: {value}')
-        os.environ[key] = value
+        os.environ[key] = str(value)
         # add exception for SWE-Agent:
         if key == 'AZURE_API_KEY':
-            os.environ['AZURE_OPENAI_API_KEY'] = value
+            os.environ['AZURE_OPENAI_API_KEY'] = str(value)
             logger.info('AZURE_OPENAI_API_KEY: [REDACTED]')
 
     # Then, set environment variables from [evaluator_api_keys] (will override [llm] if conflict)
     logger.info('Setting the following environment variables from [evaluator_api_keys]:')
     for key, value in evaluator_config.items():
+        if _is_placeholder(value) and os.environ.get(key) and not _is_placeholder(os.environ.get(key)):
+            logger.info('%s: (keeping existing env)', key)
+            continue
         logger.info('%s', f'{key}: [REDACTED]' if 'key' in key.lower() else f'{key}: {value}')
-        os.environ[key] = value
+        os.environ[key] = str(value)
         # add exception for SWE-Agent:
         if key == 'AZURE_API_KEY':
-            os.environ['AZURE_OPENAI_API_KEY'] = value
+            os.environ['AZURE_OPENAI_API_KEY'] = str(value)
             logger.info('AZURE_OPENAI_API_KEY: [REDACTED]')
