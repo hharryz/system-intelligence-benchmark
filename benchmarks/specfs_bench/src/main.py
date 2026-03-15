@@ -65,6 +65,7 @@ def load_prompt(prompt_file: Path) -> str:
 def run_generation(
     spec_files: list[Path],
     spec_root: Path,
+    benchmark_spec_root: Path,
     output_dir: Path,
     model_name: str,
     generation_prompt_template: str,
@@ -77,7 +78,11 @@ def run_generation(
     results: list[dict[str, Any]] = []
 
     for index, spec_path in enumerate(spec_files, start=1):
-        rel_code_path = rel_code_path_for_spec(spec_root, spec_path)
+        try:
+            # Keep module prefix (e.g., interface-util/check_del.c) when spec_dir is a subdirectory.
+            rel_code_path = spec_path.relative_to(benchmark_spec_root).with_suffix('.c')
+        except ValueError:
+            rel_code_path = rel_code_path_for_spec(spec_root, spec_path)
         output_code_path = generated_root / rel_code_path
         output_code_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -233,6 +238,7 @@ def main(args: argparse.Namespace) -> None:
         logger.warning('No env.toml found. Relying on environment variables only.')
 
     spec_root = (benchmark_root / args.spec_dir).resolve()
+    benchmark_spec_root = (benchmark_root / 'data/spec').resolve()
     code_root = (benchmark_root / args.code_dir).resolve()
 
     if not spec_root.exists():
@@ -255,6 +261,7 @@ def main(args: argparse.Namespace) -> None:
     generation_results = run_generation(
         spec_files=spec_files,
         spec_root=spec_root,
+        benchmark_spec_root=benchmark_spec_root,
         output_dir=output_dir,
         model_name=args.model_name,
         generation_prompt_template=generation_prompt,
