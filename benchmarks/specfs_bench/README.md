@@ -1,3 +1,4 @@
+# benchmarks/specfs_bench/README.md
 # SpecFS-Bench
 
 SpecFS-Bench evaluates LLM capability on **spec-to-code generation** for filesystem C functions.
